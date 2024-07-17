@@ -13,22 +13,22 @@ def cal_new_size(im_h, im_w, min_size, max_size):
         if im_h < min_size:
             ratio = 1.0 * min_size / im_h
             im_h = min_size
-            im_w = round(im_w*ratio)
+            im_w = round(im_w * ratio)
         elif im_h > max_size:
             ratio = 1.0 * max_size / im_h
             im_h = max_size
-            im_w = round(im_w*ratio)
+            im_w = round(im_w * ratio)
         else:
             ratio = 1.0
     else:
         if im_w < min_size:
             ratio = 1.0 * min_size / im_w
             im_w = min_size
-            im_h = round(im_h*ratio)
+            im_h = round(im_h * ratio)
         elif im_w > max_size:
             ratio = 1.0 * max_size / im_w
             im_w = max_size
-            im_h = round(im_h*ratio)
+            im_h = round(im_h * ratio)
         else:
             ratio = 1.0
     return im_h, im_w, ratio
@@ -95,7 +95,7 @@ def generate_data_sta(im_path, min_size, max_size):
     im = Image.open(im_path)
     im_w, im_h = im.size
     name = im_path.split('/')[-1].split('.')[0]
-    mat_path = os.path.abspath(os.path.join(im_path, os.pardir, os.pardir, 'ground-truth', 'GT_' + name + '.mat'))
+    mat_path = os.path.join(os.path.dirname(im_path), '..', 'ground_truth', 'GT_' + name + '.mat')
     points = loadmat(mat_path)['image_info'][0][0][0][0][0].astype(np.float32)
     idx_mask = (points[:, 0] >= 0) * (points[:, 0] <= im_w) * (points[:, 1] >= 0) * (points[:, 1] <= im_h)
     points = points[idx_mask]
@@ -105,6 +105,9 @@ def generate_data_sta(im_path, min_size, max_size):
         im = cv2.resize(np.array(im), (im_w, im_h), cv2.INTER_CUBIC)
         points = points * rr
     return Image.fromarray(im), points
+
+def generate_data_stb(im_path, min_size, max_size):
+    return generate_data_sta(im_path, min_size, max_size)
 
 def generate_data_cc50(im_path, min_size, max_size):
     im = Image.open(im_path)
@@ -266,22 +269,16 @@ def run_smartcity(origin_dir, save_dir, min_size, max_size):
             np.save(gd_save_path, points)
 
 def run_sta(origin_dir, save_dir, min_size, max_size):
-    if origin_dir.split('/')[-1] == 'part_A':
-        part = 'sta'
-    else:
-        part = 'stb'
     for phase in ['train', 'test']:
-        sub_dir = os.path.join(origin_dir, phase+'_data')
+        sub_dir = os.path.join(origin_dir, phase + '_data')
         if phase == 'train':
             sub_phase_list = ['train', 'val']
             im_path = os.path.join(sub_dir, 'images')
             im_list = glob(os.path.join(im_path, '*jpg'))
-            with open(f'{part}_train.txt') as f:
-                train_list = f.readlines()
-            with open(f'{part}_val.txt') as f:
-                val_list = f.readlines()
-            train_list = [os.path.join(im_path, i.strip()) for i in train_list]
-            val_list = [os.path.join(im_path, i.strip()) for i in val_list]
+            shuffle(im_list)
+            train_split = int(len(im_list) * 0.8)
+            train_list = im_list[:train_split]
+            val_list = im_list[train_split:]
             for sub_phase, im_list in zip(sub_phase_list, [train_list, val_list]):
                 sub_save_dir = os.path.join(save_dir, sub_phase)
                 if not os.path.exists(sub_save_dir):
@@ -307,6 +304,43 @@ def run_sta(origin_dir, save_dir, min_size, max_size):
                 gd_save_path = im_save_path.replace('jpg', 'npy')
                 np.save(gd_save_path, points)
 
+def run_stb(origin_dir, save_dir, min_size, max_size):
+    for phase in ['train', 'test']:
+        sub_dir = os.path.join(origin_dir, phase + '_data')
+        if phase == 'train':
+            sub_phase_list = ['train', 'val']
+            im_path = os.path.join(sub_dir, 'images')
+            im_list = glob(os.path.join(im_path, '*jpg'))
+            shuffle(im_list)
+            train_split = int(len(im_list) * 0.8)
+            train_list = im_list[:train_split]
+            val_list = im_list[train_split:]
+            for sub_phase, im_list in zip(sub_phase_list, [train_list, val_list]):
+                sub_save_dir = os.path.join(save_dir, sub_phase)
+                if not os.path.exists(sub_save_dir):
+                    os.makedirs(sub_save_dir)
+                for im_path in tqdm(im_list):
+                    name = os.path.basename(im_path)
+                    im, points = generate_data_stb(im_path, min_size, max_size)
+                    im_save_path = os.path.join(sub_save_dir, name)
+                    im.save(im_save_path)
+                    gd_save_path = im_save_path.replace('jpg', 'npy')
+                    np.save(gd_save_path, points)
+        else:
+            sub_save_dir = os.path.join(save_dir, 'test')
+            if not os.path.exists(sub_save_dir):
+                os.makedirs(sub_save_dir)
+            im_path = os.path.join(sub_dir, 'images')
+            im_list = glob(os.path.join(im_path, '*jpg'))
+            for im_path in tqdm(im_list):
+                name = os.path.basename(im_path)
+                im, points = generate_data_stb(im_path, min_size, max_size)
+                im_save_path = os.path.join(sub_save_dir, name)
+                im.save(im_save_path)
+                gd_save_path = im_save_path.replace('jpg', 'npy')
+                np.save(gd_save_path, points)
+                
+                
 def run_cc50(origin_dir, save_dir, min_size, max_size):
     im_list = glob(os.path.join(origin_dir, '*jpg'))
     shuffle(im_list)
@@ -527,21 +561,22 @@ def run_ucsd2(origin_dir, save_dir, min_size, max_size):
                 gd_save_path = im_save_path.replace('png', 'npy')
                 np.save(gd_save_path, points)
 
+
 def parse_args():
-    parser = argparse.ArgumentParser(description='Test ')
-    parser.add_argument('--origin-dir', default='E:\Dataset\Counting\jhu_crowd_v2.0',
+    parser = argparse.ArgumentParser(description='Data preprocessing for ShanghaiTech dataset')
+    parser.add_argument('--origin-dir', default='/run/media/adityarai/Satyapal Singh/mpcount/DATASETS/SHANGHAITECH OFFICIAL/ShanghaiTech_Crowd_Counting_Dataset/part_A',
                         help='original data directory')
-    parser.add_argument('--data-dir', default='/home/teddy/UCF-Train-Val-Test',
+    parser.add_argument('--data-dir', default='data/sta',
                         help='processed data directory')
     parser.add_argument('--min-size', default=512, type=int,
                         help='minimum image size')
     parser.add_argument('--max-size', default=2048, type=int,
                         help='maximum image size')
-    parser.add_argument('--dataset', default='jhu', type=str, 
-                        choices=['jhu', 'qnrf', 'smartcity', 'sta', 'stb', 'cc50', 'fdst', 'vidcrowd', 'worldexpo', 'nwpu', 'mall', 'ucsd'],
+    parser.add_argument('--dataset', default='sta', type=str, choices=['sta', 'stb'],
                         help='dataset name')
     args = parser.parse_args()
     return args
+
 
 if __name__ == '__main__':
     args = parse_args()
@@ -554,25 +589,9 @@ if __name__ == '__main__':
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
-    if dataset == 'jhu':
-        run_jhu(origin_dir, save_dir, min_size, max_size)
-    elif dataset == 'qnrf':
-        run_qnrf(origin_dir, save_dir, min_size, max_size)
-    elif dataset == 'smartcity':
-        run_smartcity(origin_dir, save_dir, min_size, max_size)
-    elif dataset == 'sta' or dataset == 'stb':
+    if dataset == 'sta':
         run_sta(origin_dir, save_dir, min_size, max_size)
-    elif dataset == 'cc50':
-        run_cc50(origin_dir, save_dir, min_size, max_size)
-    elif dataset == 'fdst':
-        run_fdst(origin_dir, save_dir, min_size, max_size)
-    elif dataset == 'vidcrowd':
-        run_vidcrowd(origin_dir, save_dir, min_size, max_size)
-    elif dataset == 'nwpu':
-        run_nwpu(origin_dir, save_dir, min_size, max_size)
-    elif dataset == 'mall':
-        run_mall(origin_dir, save_dir, min_size, max_size)
-    elif dataset == 'ucsd':
-        run_ucsd(origin_dir, save_dir, min_size, max_size)
+    elif dataset == 'stb':
+        run_stb(origin_dir, save_dir, min_size, max_size)
     else:
-        raise NotImplementedError
+        raise NotImplementedError(f"Dataset {dataset} not supported")

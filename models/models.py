@@ -25,67 +25,81 @@ def upsample(x, scale_factor=2, mode='bilinear'):
         return F.interpolate(x, scale_factor=scale_factor, mode=mode)
     else:
         return F.interpolate(x, scale_factor=scale_factor, mode=mode, align_corners=False)
-    
+
 class DGModel_base(nn.Module):
     def __init__(self, pretrained=True, den_dropout=0.5):
         super().__init__()
 
         self.den_dropout = den_dropout
 
-        vgg = models.vgg16_bn(weights=models.VGG16_BN_Weights.DEFAULT if pretrained else None)
-        self.enc1 = nn.Sequential(*list(vgg.features.children())[:23])
-        self.enc2 = nn.Sequential(*list(vgg.features.children())[23:33])
-        self.enc3 = nn.Sequential(*list(vgg.features.children())[33:43])
+        mobilenet = models.mobilenet_v3_large(weights=models.MobileNet_V3_Large_Weights.DEFAULT if pretrained else None)
+        self.enc1 = nn.Sequential(*list(mobilenet.features.children())[:6])  # Output: [Batch, 40, H/2, W/2]
+        self.enc2 = nn.Sequential(*list(mobilenet.features.children())[6:12])  # Output: [Batch, 112, H/4, W/4]
+        self.enc3 = nn.Sequential(*list(mobilenet.features.children())[12:])  # Output: [Batch, 960, H/8, W/8]
 
         self.dec3 = nn.Sequential(
-            ConvBlock(512, 1024, bn=True),
-            ConvBlock(1024, 512, bn=True)
-        )
-
-        self.dec2 = nn.Sequential(
-            ConvBlock(1024, 512, bn=True),
+            ConvBlock(960, 512, bn=True),
             ConvBlock(512, 256, bn=True)
         )
 
-        self.dec1 = nn.Sequential(
-            ConvBlock(512, 256, bn=True),
+        self.dec2 = nn.Sequential(
+            ConvBlock(112 + 256, 256, bn=True),  # Corrected channels
             ConvBlock(256, 128, bn=True)
         )
 
+        self.dec1 = nn.Sequential(
+            ConvBlock(40 + 128, 128, bn=True),  # Corrected channels
+            ConvBlock(128, 64, bn=True)
+        )
+
         self.den_dec = nn.Sequential(
-            ConvBlock(512+256+128, 256, kernel_size=1, padding=0, bn=True),
+            ConvBlock(256 + 128 + 64, 128, kernel_size=1, padding=0, bn=True),  # Corrected channels
             nn.Dropout2d(p=den_dropout)
         )
 
         self.den_head = nn.Sequential(
-            ConvBlock(256, 1, kernel_size=1, padding=0)
+            ConvBlock(128, 1, kernel_size=1, padding=0)
         )
 
+    def pad_to_match(self, tensors):
+        max_h = max(tensor.size(2) for tensor in tensors)
+        max_w = max(tensor.size(3) for tensor in tensors)
+        padded_tensors = []
+        for tensor in tensors:
+            h, w = tensor.size(2), tensor.size(3)
+            pad_h = (max_h - h) // 2
+            pad_w = (max_w - w) // 2
+            pad = (pad_w, max_w - w - pad_w, pad_h, max_h - h - pad_h)
+            padded_tensors.append(F.pad(tensor, pad))
+        return padded_tensors
+
     def forward_fe(self, x):
-        x1 = self.enc1(x)
-        x2 = self.enc2(x1)
-        x3 = self.enc3(x2)
+        x1 = self.enc1(x)  # Output: [Batch, 40, H/2, W/2]
+        x2 = self.enc2(x1)  # Output: [Batch, 112, H/4, W/4]
+        x3 = self.enc3(x2)  # Output: [Batch, 960, H/8, W/8]
 
-        x = self.dec3(x3)
+        x = self.dec3(x3)  # Output: [Batch, 256, H/8, W/8]
         y3 = x
-        x = upsample(x, scale_factor=2)
-        x = torch.cat([x, x2], dim=1)
+        x = upsample(x, scale_factor=2)  # Output: [Batch, 256, H/4, W/4]
+        x = torch.cat(self.pad_to_match([x, x2]), dim=1)  # Output: [Batch, 256 + 112, H/4, W/4]
 
-        x = self.dec2(x)
+        x = self.dec2(x)  # Output: [Batch, 128, H/4, W/4]
         y2 = x
-        x = upsample(x, scale_factor=2)
-        x = torch.cat([x, x1], dim=1)
+        x = upsample(x, scale_factor=2)  # Output: [Batch, 128, H/2, W/2]
+        x = torch.cat(self.pad_to_match([x, x1]), dim=1)  # Output: [Batch, 128 + 40, H/2, W/2]
 
-        x = self.dec1(x)
+        x = self.dec1(x)  # Output: [Batch, 64, H/2, W/2]
         y1 = x
 
-        y2 = upsample(y2, scale_factor=2)
-        y3 = upsample(y3, scale_factor=4)
+        y2 = upsample(y2, scale_factor=2)  # Output: [Batch, 128, H, W]
+        y3 = upsample(y3, scale_factor=4)  # Output: [Batch, 256, H, W]
 
-        y_cat = torch.cat([y1, y2, y3], dim=1)
+        y1, y2, y3 = self.pad_to_match([y1, y2, y3])
+
+        y_cat = torch.cat([y1, y2, y3], dim=1)  # Output: [Batch, 64 + 128 + 256, H, W]
 
         return y_cat, x3
-    
+
     def forward(self, x):
         y_cat, _ = self.forward_fe(x)
 
@@ -94,7 +108,7 @@ class DGModel_base(nn.Module):
         d = upsample(d, scale_factor=4)
 
         return d
-    
+
 class DGModel_mem(DGModel_base):
     def __init__(self, pretrained=True, mem_size=1024, mem_dim=256, den_dropout=0.5):
         super().__init__(pretrained, den_dropout)
@@ -105,7 +119,7 @@ class DGModel_mem(DGModel_base):
         self.mem = nn.Parameter(torch.FloatTensor(1, self.mem_dim, self.mem_size).normal_(0.0, 1.0))
 
         self.den_dec = nn.Sequential(
-            ConvBlock(512+256+128, self.mem_dim, kernel_size=1, padding=0, bn=True),
+            ConvBlock(256 + 128 + 64, self.mem_dim, kernel_size=1, padding=0, bn=True),  # Corrected channels
             nn.Dropout2d(p=den_dropout)
         )
 
@@ -123,7 +137,7 @@ class DGModel_mem(DGModel_base):
         y_new_ = y_new.view(b, k, h, w)
 
         return y_new_, logits
-    
+
     def forward(self, x):
         y_cat, _ = self.forward_fe(x)
 
@@ -134,7 +148,7 @@ class DGModel_mem(DGModel_base):
         d = upsample(d, scale_factor=4)
 
         return d
-    
+
 class DGModel_memadd(DGModel_mem):
     def __init__(self, pretrained=True, mem_size=1024, mem_dim=256, den_dropout=0.5, err_thrs=0.5):
         super().__init__(pretrained, mem_size, mem_dim, den_dropout)
@@ -142,18 +156,12 @@ class DGModel_memadd(DGModel_mem):
         self.err_thrs = err_thrs
 
         self.den_dec = nn.Sequential(
-            ConvBlock(512+256+128, 256, kernel_size=1, padding=0, bn=True)
+            ConvBlock(256 + 128 + 64, 256, kernel_size=1, padding=0, bn=True)
         )
 
     def jsd(self, logits1, logits2):
         p1 = F.softmax(logits1, dim=1)
         p2 = F.softmax(logits2, dim=1)
-        # pm = (0.5 * (p1 + p2))
-        # jsd = 0.5 / logits1.shape[2] * (F.kl_div(p1.log(), pm, reduction='batchmean') + \
-        #           F.kl_div(p2.log(), pm, reduction='batchmean'))
-        # log_p1 = F.log_softmax(logits1, dim=1)
-        # log_p2 = F.log_softmax(logits2, dim=1)
-        # jsd = F.kl_div(log_p2, log_p1, reduction='batchmean', log_target=True) / logits1.shape[2]
         jsd = F.mse_loss(p1, p2)
         return jsd
 
@@ -182,7 +190,7 @@ class DGModel_memadd(DGModel_mem):
         d2 = upsample(d2, scale_factor=4)
 
         return d1, d2, loss_con
-    
+
 class DGModel_cls(DGModel_base):
     def __init__(self, pretrained=True, den_dropout=0.5, cls_dropout=0.3, cls_thrs=0.5):
         super().__init__(pretrained, den_dropout)
@@ -191,7 +199,7 @@ class DGModel_cls(DGModel_base):
         self.cls_thrs = cls_thrs
 
         self.cls_head = nn.Sequential(
-            ConvBlock(512, 256, bn=True),
+            ConvBlock(960, 256, bn=True),
             nn.Dropout2d(p=self.cls_dropout),
             ConvBlock(256, 1, kernel_size=1, padding=0, relu=False),
             nn.Sigmoid()
@@ -199,7 +207,7 @@ class DGModel_cls(DGModel_base):
 
     def transform_cls_map_gt(self, c_gt):
         return upsample(c_gt, scale_factor=4, mode='nearest')
-    
+
     def transform_cls_map_pred(self, c):
         c_new = c.clone().detach()
         c_new[c<self.cls_thrs] = 0
@@ -213,7 +221,7 @@ class DGModel_cls(DGModel_base):
             return self.transform_cls_map_gt(c_gt)
         else:
             return self.transform_cls_map_pred(c)
-    
+
     def forward(self, x, c_gt=None):
         y_cat, x3 = self.forward_fe(x)
 
@@ -226,7 +234,7 @@ class DGModel_cls(DGModel_base):
         dc = upsample(dc, scale_factor=4)
 
         return dc, c
-    
+
 class DGModel_memcls(DGModel_mem):
     def __init__(self, pretrained=True, mem_size=1024, mem_dim=256, den_dropout=0.5, cls_dropout=0.3, cls_thrs=0.5):
         super().__init__(pretrained, mem_size, mem_dim, den_dropout)
@@ -235,7 +243,7 @@ class DGModel_memcls(DGModel_mem):
         self.cls_thrs = cls_thrs
 
         self.cls_head = nn.Sequential(
-            ConvBlock(512, 256, bn=True),
+            ConvBlock(960, 256, bn=True),
             nn.Dropout2d(p=self.cls_dropout),
             ConvBlock(256, 1, kernel_size=1, padding=0, relu=False),
             nn.Sigmoid()
@@ -243,7 +251,7 @@ class DGModel_memcls(DGModel_mem):
 
     def transform_cls_map_gt(self, c_gt):
         return upsample(c_gt, scale_factor=4, mode='nearest')
-    
+
     def transform_cls_map_pred(self, c):
         c_new = c.clone().detach()
         c_new[c<self.cls_thrs] = 0
@@ -257,7 +265,7 @@ class DGModel_memcls(DGModel_mem):
             return self.transform_cls_map_gt(c_gt)
         else:
             return self.transform_cls_map_pred(c)
-    
+
     def forward(self, x, c_gt=None):
         y_cat, x3 = self.forward_fe(x)
 
@@ -271,7 +279,7 @@ class DGModel_memcls(DGModel_mem):
         dc = upsample(dc, scale_factor=4)
 
         return dc, c
-    
+
 class DGModel_final(DGModel_memcls):
     def __init__(self, pretrained=True, mem_size=1024, mem_dim=256, cls_thrs=0.5, err_thrs=0.5, den_dropout=0.5, cls_dropout=0.3, has_err_loss=False):
         super().__init__(pretrained, mem_size, mem_dim, den_dropout, cls_dropout, cls_thrs)
@@ -280,21 +288,15 @@ class DGModel_final(DGModel_memcls):
         self.has_err_loss = has_err_loss
 
         self.den_dec = nn.Sequential(
-            ConvBlock(512+256+128, self.mem_dim, kernel_size=1, padding=0, bn=True)
+            ConvBlock(256 + 128 + 64, self.mem_dim, kernel_size=1, padding=0, bn=True)  # Corrected channels
         )
-    
+
     def jsd(self, logits1, logits2):
         p1 = F.softmax(logits1, dim=1)
         p2 = F.softmax(logits2, dim=1)
-        # pm = (0.5 * (p1 + p2))
-        # jsd = 0.5 / logits1.shape[2] * (F.kl_div(p1.log(), pm, reduction='batchmean') + \
-        #           F.kl_div(p2.log(), pm, reduction='batchmean'))
-        # log_p1 = F.log_softmax(logits1, dim=1)
-        # log_p2 = F.log_softmax(logits2, dim=1)
-        # jsd = F.kl_div(log_p2, log_p1, reduction='batchmean', log_target=True) / logits1.shape[2]
         jsd = F.mse_loss(p1, p2)
         return jsd
-    
+
     def forward_train(self, img1, img2, c_gt=None):
         y_cat1, x3_1 = self.forward_fe(img1)
         y_cat2, x3_2 = self.forward_fe(img2)
@@ -305,9 +307,6 @@ class DGModel_final(DGModel_memcls):
 
         e_y = torch.abs(y_in1 - y_in2)
         e_mask = (e_y < self.err_thrs).clone().detach()
-        # e_y = torch.square(y_in1 - y_in2)
-        # e_mask = ((e_y).mean(dim=1, keepdim=True) < self.err_thrs).clone().detach()
-        # print(e_mask.sum() / e_mask.numel())
         loss_err = F.l1_loss(y_in1, y_in2) if self.has_err_loss else 0
 
         y_den_masked1 = F.dropout2d(y_den1 * e_mask, self.den_dropout)
