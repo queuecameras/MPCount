@@ -108,6 +108,8 @@ class DictAvgMeter(object):
         self.count = {}
 
     def update(self, val, n=1):
+        if val is None:
+            return  # Skip updating if the value is None
         for k, v in val.items():
             if k not in self.val:
                 self.val[k] = 0

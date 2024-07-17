@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F  # Add this import statement
 import os
 import time
 from glob import glob
@@ -8,7 +9,6 @@ from utils.misc import AverageMeter, DictAvgMeter, get_current_datetime, easy_tr
 
 class Trainer(object):
     def __init__(self, seed, version, device):
-
         self.seed = seed
         self.version = version
         self.device = torch.device(device)
@@ -47,11 +47,51 @@ class Trainer(object):
             model[0].eval()
             model[1].eval()
 
-    def train_step(self, model, loss, optimizer, batch, epoch):
-        pass
+    def train_step(self, model, loss_fn, optimizer, batch, epoch):
+        # Print the structure of the batch for debugging
+        print(f"Batch structure: {type(batch)}, length: {len(batch)}, contents: {[type(item) for item in batch]}")
+        
+        # Assume the batch contains (inputs, targets, *others)
+        inputs, targets = batch[:2]  # Adjust this based on the actual structure
+
+        inputs, targets = inputs.to(self.device), targets.to(self.device)
+
+        optimizer.zero_grad()
+        outputs = model(inputs)
+
+        if isinstance(outputs, tuple):
+            outputs = outputs[0]  # Adjust to get the relevant tensor from the tuple
+
+        # Upsample the outputs to match the target size
+        outputs = F.interpolate(outputs, size=(targets.size(2), targets.size(3)), mode='bilinear', align_corners=False)
+
+        loss = loss_fn(outputs, targets)
+        loss.backward()
+        optimizer.step()
+
+        return loss.item()
 
     def val_step(self, model, batch):
-        pass
+        # Assume the batch contains (inputs, targets, *others)
+        inputs, targets = batch[:2]  # Adjust this based on the actual structure
+
+        inputs, targets = inputs.to(self.device), targets.to(self.device)
+
+        outputs = model(inputs)
+
+        if isinstance(outputs, tuple):
+            outputs = outputs[0]  # Adjust to get the relevant tensor from the tuple
+
+        # Upsample the outputs to match the target size
+        outputs = F.interpolate(outputs, size=(targets.size(2), targets.size(3)), mode='bilinear', align_corners=False)
+
+        # Calculate the criterion (loss)
+        criterion = F.mse_loss(outputs, targets)
+
+        # Additional metrics can be computed here
+        additional = {}
+
+        return criterion.item(), additional
 
     def test_step(self, model, batch):
         pass

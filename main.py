@@ -5,7 +5,7 @@ import os
 import yaml
 import argparse
 
-from trainers.dgtrainer import DGTrainer
+from trainers.trainer import Trainer
 from models.models import DGModel_base, DGModel_mem, DGModel_memadd, DGModel_cls, DGModel_memcls, DGModel_final
 from datasets.den_dataset import DensityMapDataset
 from datasets.den_cls_dataset import DenClsDataset
@@ -71,7 +71,7 @@ def get_scheduler(name, params, optimizer):
     else:
         raise ValueError('Unknown scheduler: {}'.format(name))
 
-def load_config(config_path, task):
+def load_config(config_path, task, device='cpu'):
     with open(config_path, 'r') as f:
         cfg = yaml.load(f, Loader=yaml.FullLoader)
 
@@ -80,10 +80,11 @@ def load_config(config_path, task):
 
     init_params['seed'] = cfg['seed']
     init_params['version'] = cfg['version']
-    init_params['device'] = cfg['device']
-    init_params['log_para'] = cfg['log_para']
-    init_params['patch_size'] = cfg['patch_size']
-    init_params['mode'] = cfg['mode']
+    init_params['device'] = device  # Set device from argument or default to CPU
+    # Removed 'log_para' and 'patch_size' and 'mode' since they are not needed by Trainer
+    # init_params['log_para'] = cfg['log_para']
+    # init_params['patch_size'] = cfg['patch_size']
+    # init_params['mode'] = cfg['mode']
 
     seed_everything(cfg['seed'])
 
@@ -113,11 +114,12 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str, default='configs/dg.yaml', help='path to config file')
     parser.add_argument('--task', type=str, default='train', choices=['train', 'test', 'vis'], help='task to perform')
+    parser.add_argument('--device', type=str, default='cpu', help='Device to use for computation (default: cpu)')  # Add device argument
     args = parser.parse_args()
 
-    init_params, task_params = load_config(args.config, args.task)
+    init_params, task_params = load_config(args.config, args.task, args.device)  # Pass device to load_config
 
-    trainer = DGTrainer(**init_params)
+    trainer = Trainer(**init_params)
     os.system(f'cp {args.config} {trainer.log_dir}')
 
     if args.task == 'train':
